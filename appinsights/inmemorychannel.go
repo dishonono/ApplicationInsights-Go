@@ -9,8 +9,8 @@ import (
 )
 
 var (
-	submit_retries = []time.Duration{time.Duration(2 * time.Second)}
-	//removed: , time.Duration(30 * time.Second), time.Duration(60 * time.Second)
+	submit_retries = []time.Duration{}
+	//removed: time.Duration(10 * time.Second), time.Duration(30 * time.Second), time.Duration(60 * time.Second)
 )
 
 // A telemetry channel that stores events exclusively in memory.  Presently
