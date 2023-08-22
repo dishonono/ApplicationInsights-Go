@@ -6,11 +6,11 @@ import (
 
 	"code.cloudfoundry.org/clock"
 	"github.com/microsoft/ApplicationInsights-Go/appinsights/contracts"
+	"golang.org/x/sync/semaphore"
 )
 
 var (
-	submit_retries = []time.Duration{}
-	//removed: time.Duration(10 * time.Second), time.Duration(30 * time.Second), time.Duration(60 * time.Second)
+	submit_retries = []time.Duration{time.Duration(10 * time.Second), time.Duration(30 * time.Second), time.Duration(60 * time.Second)}
 )
 
 // A telemetry channel that stores events exclusively in memory.  Presently
@@ -25,6 +25,7 @@ type InMemoryChannel struct {
 	waitgroup       sync.WaitGroup
 	throttle        *throttleManager
 	transmitter     transmitter
+	retrySemaphore  *semaphore.Weighted //allow only 10 concurrent retries
 }
 
 type inMemoryChannelControl struct {
@@ -55,6 +56,7 @@ func NewInMemoryChannel(config *TelemetryConfiguration) *InMemoryChannel {
 		batchInterval:   config.MaxBatchInterval,
 		throttle:        newThrottleManager(),
 		transmitter:     newTransmitter(config.EndpointUrl, config.Client),
+		retrySemaphore:  semaphore.NewWeighted(int64(10)),
 	}
 
 	go channel.acceptLoop()
@@ -367,7 +369,7 @@ func (channel *InMemoryChannel) transmitRetry(items telemetryBufferItems, retry 
 	payload := items.serialize()
 	retryTimeRemaining := retryTimeout
 
-	for _, wait := range submit_retries {
+	for index, wait := range submit_retries {
 		result, err := channel.transmitter.Transmit(payload, items)
 		if err == nil && result != nil && result.IsSuccess() {
 			return
@@ -376,6 +378,15 @@ func (channel *InMemoryChannel) transmitRetry(items telemetryBufferItems, retry 
 		if !retry {
 			diagnosticsWriter.Write("Refusing to retry telemetry submission (retry==false)")
 			return
+		}
+
+		if index == 0 {
+			if channel.retrySemaphore.TryAcquire(1) {
+				defer channel.retrySemaphore.Release(1)
+			} else {
+				diagnosticsWriter.Write("too many transmission are in retry. dropping telemetry")
+				return
+			}
 		}
 
 		// Check for success, determine if we need to retry anything
